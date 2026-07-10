@@ -1,0 +1,9 @@
+Sample Tracker is a fictional productivity app. It demonstrates the directory layout the agent expects. There's no real product or behavior behind this listing — copy is intentionally generic.
+
+PRIVACY-FIRST BY DESIGN
+No account. No email. No data sent anywhere. Everything stays on your device.
+
+DEMO SECTIONS
+• Section 1
+• Section 2
+• Section 3

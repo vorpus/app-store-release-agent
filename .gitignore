@@ -1,0 +1,78 @@
+# ----- Secrets & credentials -----
+# App Store Connect API keys — CRITICAL, never commit
+*.p8
+AuthKey_*.p8
+
+# Issuer ID / Key ID live alongside the .p8 — gitignore so a leaked key
+# without identifiers is still unusable
+identifiers.txt
+*.asc.env
+
+# Generic credential stores
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+.credentials/
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Test / lint / type caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+
+# ----- macOS -----
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# ----- Editors / IDEs -----
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*.swn
+*~
+
+# ----- Project-local -----
+metadata/.cache/
+logs/
+*.log

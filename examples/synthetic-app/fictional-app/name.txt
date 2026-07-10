@@ -1,0 +1,2 @@
+# Sample Tracker is a fictional productivity app used to demonstrate the
+# directory layout that the agent expects. DO NOT use as real metadata.

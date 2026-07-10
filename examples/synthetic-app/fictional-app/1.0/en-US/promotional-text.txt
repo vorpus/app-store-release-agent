@@ -1,0 +1,1 @@
+Sample Tracker — fictional demo of the agent's metadata layout.
