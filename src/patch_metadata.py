@@ -2,7 +2,7 @@
 ASO release toolkit — patch App Store Connect metadata, attach a build, or
 submit for App Review, for one app.
 
-Three operating modes (mutually exclusive):
+Four operating modes (mutually exclusive):
 
   1. Metadata PATCH  (--locale --field --file)
      PATCH keywords/whats-new/title/subtitle/etc on a version localization.
@@ -15,7 +15,11 @@ Three operating modes (mutually exclusive):
      shell, attach the in-flight version as an item, then PATCH
      `submitted:true` to commit. The legacy /v1/appStoreVersionSubmissions
      endpoint is deprecated and returns 403 for keys with the modern
-     permission set — do not use it.
+    permission set — do not use it.
+
+  4. Upload screenshots  (--upload-screenshots DIR)
+     Upload validated PNGs to an editable version. Existing screenshots are
+     refused unless --append-screenshots is explicitly supplied.
 
 All three modes default to dry-run. Pass --apply to actually mutate the
 App Store Connect API.
@@ -24,6 +28,7 @@ Required environment variables:
     ASC_ISSUER_ID
     ASC_KEY_ID
     ASC_PRIVATE_KEY_PATH
+    ASC_WORKSPACE_DIR
 """
 import argparse
 import os
@@ -31,12 +36,14 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import jwt
 import requests
+from workspace import workspace_dir
 
 ROOT = Path(__file__).parent
-META = ROOT / "metadata"
+META = workspace_dir()
 BASE = "https://api.appstoreconnect.apple.com/v1"
 
 
@@ -210,6 +217,99 @@ def commit_review_submission(submission_id: str):
     return patch(f"/reviewSubmissions/{submission_id}", body)
 
 
+def find_screenshot_set(localization_id: str, display_type: str):
+    """Return an existing screenshot set and its asset count, if present."""
+    sets = get(
+        f"/appStoreVersionLocalizations/{localization_id}/appScreenshotSets",
+        {"limit": 50},
+    ).get("data", [])
+    for screenshot_set in sets:
+        if screenshot_set["attributes"].get("screenshotDisplayType") == display_type:
+            assets = get(
+                f"/appScreenshotSets/{screenshot_set['id']}/appScreenshots",
+                {"limit": 50},
+            ).get("data", [])
+            return screenshot_set["id"], len(assets)
+    return None, 0
+
+
+def create_screenshot_set(localization_id: str, display_type: str) -> str:
+    """Create the set for one localization/display-type pair."""
+    body = {
+        "data": {
+            "type": "appScreenshotSets",
+            "attributes": {"screenshotDisplayType": display_type},
+            "relationships": {
+                "appStoreVersionLocalization": {
+                    "data": {"type": "appStoreVersionLocalizations", "id": localization_id}
+                }
+            },
+        }
+    }
+    return post("/appScreenshotSets", body)["data"]["id"]
+
+
+def validate_png(path: Path) -> tuple[bytes, int, int]:
+    """Read one regular, bounded PNG and return its bytes and IHDR dimensions."""
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"screenshot must be a regular file, not a symlink: {path}")
+    size = path.stat().st_size
+    if size <= 0 or size > MAX_SCREENSHOT_BYTES:
+        raise SystemExit(f"screenshot size must be 1..{MAX_SCREENSHOT_BYTES} bytes: {path.name}")
+    data = path.read_bytes()
+    if data[:8] != PNG_SIGNATURE or data[12:16] != b"IHDR" or len(data) < 24:
+        raise SystemExit(f"not a valid PNG with an IHDR header: {path.name}")
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    if not width or not height:
+        raise SystemExit(f"PNG dimensions must be nonzero: {path.name}")
+    return data, width, height
+
+
+def upload_one_screenshot(set_id: str, path: Path) -> str:
+    """Reserve, securely upload, and commit one validated screenshot asset."""
+    data, _, _ = validate_png(path)
+    reservation = post(
+        "/appScreenshots",
+        {
+            "data": {
+                "type": "appScreenshots",
+                "attributes": {"fileName": path.name, "fileSize": len(data)},
+                "relationships": {"appScreenshotSet": {"data": {"type": "appScreenshotSets", "id": set_id}}},
+            }
+        },
+    )
+    screenshot_id = reservation["data"]["id"]
+    operations = reservation["data"]["attributes"].get("uploadOperations", [])
+    if not operations:
+        raise SystemExit(f"Apple returned no upload operations for {path.name}")
+    covered = 0
+    for operation in operations:
+        offset, length = operation.get("offset"), operation.get("length")
+        if not isinstance(offset, int) or not isinstance(length, int) or offset != covered or length <= 0:
+            raise SystemExit(f"Apple returned invalid upload operations for {path.name}")
+        url = operation.get("url", "")
+        if urlparse(url).scheme != "https":
+            raise SystemExit("refusing a non-HTTPS presigned upload URL")
+        chunk = data[offset:offset + length]
+        if len(chunk) != length:
+            raise SystemExit(f"upload operation exceeds file length for {path.name}")
+        headers = {item["name"]: item["value"] for item in operation.get("requestHeaders", [])}
+        response = requests.put(url, data=chunk, headers=headers, timeout=180, allow_redirects=False)
+        response.raise_for_status()
+        covered += length
+    if covered != len(data):
+        raise SystemExit(f"upload operations do not cover all bytes for {path.name}")
+    final = patch(
+        f"/appScreenshots/{screenshot_id}",
+        {"data": {"type": "appScreenshots", "id": screenshot_id, "attributes": {"uploaded": True}}},
+    )
+    state = final["data"]["attributes"].get("assetDeliveryState", {}).get("state")
+    if state not in {"UPLOAD_COMPLETE", "COMPLETE"}:
+        raise SystemExit(f"upload did not commit for {path.name} (state: {state!r})")
+    return screenshot_id
+
+
 # Apple version states, ordered by "in-flight-ness" (most preferred first).
 # PREPARE_FOR_SUBMISSION is where new metadata belongs. After a submit lands,
 # the version moves through PENDING_RELEASE / WAITING_FOR_REVIEW / IN_REVIEW
@@ -227,6 +327,16 @@ IN_FLIGHT_STATES = (
 # Backwards-compatible alias — older code paths refer to EDITABLE_STATES.
 EDITABLE_STATES = IN_FLIGHT_STATES
 
+DISPLAY_TYPES = (
+    "APP_IPHONE_67",
+    "APP_IPHONE_65",
+    "APP_IPHONE_55",
+    "APP_IPAD_PRO_3GEN_129",
+)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_SCREENSHOTS = 10
+MAX_SCREENSHOT_BYTES = 20 * 1024 * 1024
+
 
 def load_app_meta(slug: str):
     """Pulls app-id, the editable version (or live if none), and version-id."""
@@ -234,7 +344,8 @@ def load_app_meta(slug: str):
     if not base.is_dir():
         raise SystemExit(f"App folder not found: {base}")
     app_id = (base / "app-id.txt").read_text().strip()
-    live_version = (base / "live-version.txt").read_text().strip()
+    live_version_path = base / "live-version.txt"
+    live_version = live_version_path.read_text().strip() if live_version_path.exists() else ""
 
     # Always target the editable in-flight version. Falls back to live only
     # if no in-flight version exists.
@@ -385,6 +496,13 @@ def main():
         help="submit the editable in-flight version for App Review "
              "(mutually exclusive with --field/--file/--locale/--attach-build)",
     )
+    p.add_argument("--upload-screenshots", type=Path, metavar="DIR")
+    p.add_argument("--display-type", choices=DISPLAY_TYPES, default="APP_IPHONE_67")
+    p.add_argument(
+        "--append-screenshots",
+        action="store_true",
+        help="explicitly append to an existing screenshot set; otherwise the upload refuses it",
+    )
     p.add_argument("--locale", help="locale, e.g. en-US (metadata PATCH mode)")
     p.add_argument(
         "--field",
@@ -403,23 +521,31 @@ def main():
     )
     args = p.parse_args()
 
-    # Mode dispatch — attach-build, submit-for-review, and metadata PATCH
+    if args.append_screenshots and not args.upload_screenshots:
+        p.error("--append-screenshots requires --upload-screenshots")
+
+    # Mode dispatch — attach-build, submit-for-review, screenshot upload, and metadata PATCH
     # are mutually exclusive.
     if args.attach_build:
-        if args.field or args.file or args.locale or args.submit_for_review:
+        if args.field or args.file or args.locale or args.submit_for_review or args.upload_screenshots:
             p.error(
                 "--attach-build is mutually exclusive with "
-                "--field/--file/--locale/--submit-for-review"
+                "--field/--file/--locale/--submit-for-review/--upload-screenshots"
             )
         cmd_attach_build(args)
         return
     if args.submit_for_review:
-        if args.field or args.file or args.locale or args.attach_build:
+        if args.field or args.file or args.locale or args.attach_build or args.upload_screenshots:
             p.error(
                 "--submit-for-review is mutually exclusive with "
-                "--field/--file/--locale/--attach-build"
+                "--field/--file/--locale/--attach-build/--upload-screenshots"
             )
         cmd_submit_for_review(args)
+        return
+    if args.upload_screenshots:
+        if args.field or args.file or args.attach_build:
+            p.error("--upload-screenshots is mutually exclusive with --field/--file/--attach-build/--submit-for-review")
+        cmd_upload_screenshots(args)
         return
 
     # Default: metadata PATCH
@@ -579,10 +705,9 @@ def cmd_submit_for_review(args):
     target_sub_id = existing_target or existing_open
 
     # Decide what work needs doing.
-    needs_create = target_sub_id is None
-    needs_attach = (
-        target_sub_id is not None and existing_target is None and existing_open is not None
-    )
+    needs_create = existing_open is None
+    # A new shell also needs its version attached before it can be committed.
+    needs_attach = existing_target is None
 
     if not (needs_create or needs_attach):
         # Reusable submission that already has this version attached.
@@ -668,6 +793,47 @@ def cmd_submit_for_review(args):
     attrs = r["data"]["attributes"]
     print(f"  state:          {attrs.get('state')}")
     print(f"  submittedDate:  {attrs.get('submittedDate')}")
+
+
+def cmd_upload_screenshots(args):
+    """Dry-run or upload a bounded, validated ordered PNG set."""
+    source = args.upload_screenshots
+    if not source.is_dir():
+        raise SystemExit(f"not a screenshot directory: {source}")
+    files = sorted(path for path in source.iterdir() if path.suffix.lower() == ".png")
+    if not files:
+        raise SystemExit(f"no PNG files found in {source}")
+    if len(files) > MAX_SCREENSHOTS:
+        raise SystemExit(f"at most {MAX_SCREENSHOTS} screenshots may be uploaded at once")
+    details = [(path, *validate_png(path)[1:]) for path in files]
+    app_id, target_version, version_id, state, _ = load_app_meta(args.app)
+    if state == "READY_FOR_SALE":
+        raise SystemExit("refusing screenshots for a live version; choose an editable in-flight version")
+    locale = args.locale or "en-US"
+    localization_id = find_version_localization_id(version_id, locale)
+    set_id, existing_count = find_screenshot_set(localization_id, args.display_type)
+    print(f"App: {args.app} ({app_id})")
+    print(f"Target version: {target_version} ({state}); locale: {locale}; type: {args.display_type}")
+    print("Upload order:")
+    for path, width, height in details:
+        print(f"- {path.name}: {width}x{height}, {path.stat().st_size} bytes")
+    if set_id:
+        print(f"Existing screenshot set {set_id} has {existing_count} asset(s).")
+        if not args.append_screenshots:
+            raise SystemExit(
+                "refusing to append to an existing set; inspect/delete it in App Store Connect "
+                "or re-run with --append-screenshots"
+            )
+        if existing_count + len(files) > MAX_SCREENSHOTS:
+            raise SystemExit(f"append would exceed the {MAX_SCREENSHOTS}-screenshot limit")
+    if not args.apply:
+        print("--dry-run: pass --apply to create/upload the screenshot set.")
+        return
+    if set_id is None:
+        set_id = create_screenshot_set(localization_id, args.display_type)
+        print(f"Created screenshot set {set_id}.")
+    for path, _, _ in details:
+        print(f"Uploaded {path.name}: {upload_one_screenshot(set_id, path)}")
 
 
 def cmd_patch_field(args):

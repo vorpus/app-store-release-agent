@@ -73,6 +73,9 @@ htmlcov/
 *~
 
 # ----- Project-local -----
-metadata/.cache/
+# Runtime mirrors are operational data, not public project assets. The only
+# committed example lives under examples/synthetic-app/.
+metadata/
+applyra-docs*.html
 logs/
 *.log

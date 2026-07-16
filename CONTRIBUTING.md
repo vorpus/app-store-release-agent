@@ -47,8 +47,9 @@ ASC_ISSUER_ID=… ASC_KEY_ID=… ASC_PRIVATE_KEY_PATH=… \
     python3 src/smoke_test.py
 
 # 3. Verify edits on a synthetic example
-mkdir -p metadata/fictional-app/1.0/en-US
-cp examples/synthetic-app/fictional-app/1.0/en-US/*.txt metadata/fictional-app/1.0/en-US/
+export ASC_WORKSPACE_DIR="$(mktemp -d)"
+mkdir -p "$ASC_WORKSPACE_DIR/fictional-app/1.0/en-US"
+cp examples/synthetic-app/fictional-app/1.0/en-US/*.txt "$ASC_WORKSPACE_DIR/fictional-app/1.0/en-US/"
 ASC_… python3 src/patch_metadata.py \
     --app fictional-app --locale en-US \
     --field keywords --file /tmp/new-keywords.txt \

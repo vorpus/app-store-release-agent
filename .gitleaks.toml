@@ -1,0 +1,6 @@
+title = "app-store-release-agent secret scanning policy"
+
+# Keep this intentionally small. False positives must be fixed in source or
+# justified with a narrowly scoped rule; broad path allowlists hide leaks.
+[extend]
+useDefault = true

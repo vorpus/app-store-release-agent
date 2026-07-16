@@ -31,10 +31,11 @@ from pathlib import Path
 
 import jwt
 import requests
+from workspace import workspace_dir
 
 ROOT = Path(__file__).parent
 BASE = "https://api.appstoreconnect.apple.com/v1"
-OUT = ROOT / "metadata"
+OUT = workspace_dir()
 
 
 def _required_env(name):
@@ -202,7 +203,7 @@ def fetch_one_app(app):
 
 
 def main():
-    OUT.mkdir(exist_ok=True)
+    workspace_dir(create=True)
     apps = get("/apps", {"limit": 200}).get("data", [])
     print(f"Catalog: {len(apps)} app(s)")
     for app in apps:
