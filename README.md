@@ -39,10 +39,13 @@ export ASC_ISSUER_ID="<your-issuer-uuid>"
 export ASC_KEY_ID="<your-10-char-key-id>"
 export ASC_PRIVATE_KEY_PATH="$HOME/.asc/AuthKey_<your-key-id>.p8"
 
+# Runtime metadata and provider caches also stay outside this checkout.
+export ASC_WORKSPACE_DIR="$HOME/.asc/workspaces/my-portfolio"
+
 # 3. Sanity check connectivity
 python3 src/smoke_test.py
 
-# 4. Pull your live catalog to ./metadata/
+# 4. Pull your live catalog to $ASC_WORKSPACE_DIR/
 python3 src/fetch_metadata.py
 
 # 5. Mutate, with dry-run first
@@ -50,6 +53,10 @@ python3 src/patch_metadata.py --app <slug> --locale en-US \
     --field keywords --file path/to/new-keywords.txt
 python3 src/patch_metadata.py --app <slug> --locale en-US \
     --field keywords --file path/to/new-keywords.txt --apply
+
+# 6. Screenshots: inspect the dry-run first; appending is always explicit
+python3 src/patch_metadata.py --app <slug> --locale en-US \
+    --upload-screenshots path/to/pngs --display-type APP_IPHONE_67
 ```
 
 ## Scripts
@@ -57,8 +64,9 @@ python3 src/patch_metadata.py --app <slug> --locale en-US \
 | Script | Purpose |
 |---|---|
 | `src/smoke_test.py` | Connect to ASC and list every app + its current live version. Best first run after credential setup. |
-| `src/fetch_metadata.py` | Pull every live app's localized metadata (titles, subtitles, keywords, descriptions, what's-new, promo text, URLs) into `./metadata/<app-slug>/<version>/<locale>/`. |
-| `src/patch_metadata.py` | Mutate one localization field, attach a build, or submit a version for review. Defaults to dry-run. |
+| `src/fetch_metadata.py` | Pull every live app's localized metadata into `$ASC_WORKSPACE_DIR/<app-slug>/<version>/<locale>/`. |
+| `src/patch_metadata.py` | Mutate metadata, attach a build, submit a version, or upload guarded screenshots. Defaults to dry-run. |
+| `src/applyra.py` | Optional, read-only provider client: cache rankings and audit them against local keywords. |
 
 ## On-disk layout (the mirror)
 
@@ -84,7 +92,8 @@ metadata/
     changelog.md            # append-only audit trail
 ```
 
-The mirror is what lets the agent treat ASC as a single source of truth
+The mirror is private runtime data. `ASC_WORKSPACE_DIR` must be outside the
+source checkout; this lets the agent treat ASC as a single source of truth
 while still being able to operate offline (drafting, reviewing diffs,
 preparing promotions).
 
@@ -97,6 +106,8 @@ preparing promotions).
   tripwires to avoid).
 - [docs/audit-trail.md](docs/audit-trail.md) — what goes in
   `changelog.md` and why.
+- [docs/applyra.md](docs/applyra.md) — optional read-only ranking provider.
+- [docs/screenshots.md](docs/screenshots.md) — guarded screenshot uploads.
 
 ## Templates
 
@@ -121,6 +132,9 @@ Real app data is not — see SECURITY.md for why.
 
 See [SECURITY.md](SECURITY.md). **Do not file public issues about
 credentials.** Use the contact at the bottom of that document.
+
+See [security automation](docs/security-automation.md) for the repository
+checks and local secret-scan command.
 
 ## License
 

@@ -20,6 +20,10 @@ This document covers two things that are easy to confuse:
   repo lives under `examples/synthetic-app/`, where every app name,
   bundle id, app id, and version is fictional. Production metadata
   belongs in your own private mirror, not here.
+- **Runtime data is external by design.** Scripts that read or write app
+  metadata require `ASC_WORKSPACE_DIR`, which must point outside this source
+  checkout. The repository CI rejects tracked root `metadata/` files and
+  Applyra provider caches.
 - **No real audit-trail content is committed.** The
   `templates/changelog.example.md` file shows the entry *structure*
   with placeholders. Real `changelog.md` files from a live portfolio
