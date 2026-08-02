@@ -66,7 +66,6 @@ python3 src/patch_metadata.py --app <slug> --locale en-US \
 | `src/smoke_test.py` | Connect to ASC and list every app + its current live version. Best first run after credential setup. |
 | `src/fetch_metadata.py` | Pull every live app's localized metadata into `$ASC_WORKSPACE_DIR/<app-slug>/<version>/<locale>/`. |
 | `src/patch_metadata.py` | Mutate metadata, attach a build, submit a version, or upload guarded screenshots. Defaults to dry-run. |
-| `src/applyra.py` | Optional, read-only provider client: cache rankings and audit them against local keywords. |
 
 ## On-disk layout (the mirror)
 
@@ -106,7 +105,6 @@ preparing promotions).
   tripwires to avoid).
 - [docs/audit-trail.md](docs/audit-trail.md) — what goes in
   `changelog.md` and why.
-- [docs/applyra.md](docs/applyra.md) — optional read-only ranking provider.
 - [docs/screenshots.md](docs/screenshots.md) — guarded screenshot uploads.
 
 ## Templates
