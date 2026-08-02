@@ -132,14 +132,32 @@ def fetch_version_localizations(version_id):
     return out
 
 
-def fetch_live_version(app_id):
-    data = get(
-        f"/apps/{app_id}/appStoreVersions",
-        {"filter[appStoreState]": "READY_FOR_SALE", "limit": 1},
-    ).get("data", [])
-    if not data:
-        return None
-    return data[0]
+# Pre-release states whose metadata is worth mirroring, most in-flight first.
+# Without these, an app whose first version is still in review has no live
+# (READY_FOR_SALE) version at all and would produce an empty mirror.
+IN_FLIGHT_STATES = (
+    "PREPARE_FOR_SUBMISSION",
+    "PENDING_RELEASE",
+    "WAITING_FOR_REVIEW",
+    "IN_REVIEW",
+)
+
+
+def fetch_versions_to_mirror(app_id):
+    """Returns (live_version_or_None, in_flight_version_or_None)."""
+    versions = get(f"/apps/{app_id}/appStoreVersions", {"limit": 50}).get("data", [])
+    live = next(
+        (v for v in versions if v["attributes"].get("appStoreState") == "READY_FOR_SALE"),
+        None,
+    )
+    in_flight = None
+    for state in IN_FLIGHT_STATES:
+        in_flight = next(
+            (v for v in versions if v["attributes"].get("appStoreState") == state), None
+        )
+        if in_flight:
+            break
+    return live, in_flight
 
 
 def fetch_one_app(app):
@@ -156,17 +174,27 @@ def fetch_one_app(app):
     write(base / "app-id.txt", app_id)
     write(base / "name.txt", name)
 
-    ver = fetch_live_version(app_id)
-    if not ver:
-        print("   · no live version, skipping per-version metadata")
+    live, in_flight = fetch_versions_to_mirror(app_id)
+    if live:
+        write(base / "live-version.txt", live["attributes"]["versionString"])
+        print(f"   · live version: {live['attributes']['versionString']}")
+    if in_flight:
+        state = in_flight["attributes"].get("appStoreState")
+        write(base / "in-flight-version.txt", in_flight["attributes"]["versionString"])
+        print(f"   · in-flight version: {in_flight['attributes']['versionString']} ({state})")
+    if not live and not in_flight:
+        print("   · no live or in-flight version, skipping per-version metadata")
         return
 
-    version_string = ver["attributes"]["versionString"]
-    write(base / "live-version.txt", version_string)
-    print(f"   · live version: {version_string}")
+    for ver in (v for v in (live, in_flight) if v):
+        fetch_one_version(app_id, base, ver)
 
+
+def fetch_one_version(app_id, base, ver):
+    version_string = ver["attributes"]["versionString"]
     version_dir = base / version_string
     write(version_dir / "version-id.txt", ver["id"])
+    write(version_dir / "state.txt", ver["attributes"].get("appStoreState") or "")
 
     app_locs = {l[0]: l for l in fetch_app_localizations_for_app(app_id)}
     ver_locs = {l[0]: l for l in fetch_version_localizations(ver["id"])}
