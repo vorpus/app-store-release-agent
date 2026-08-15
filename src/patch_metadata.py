@@ -481,6 +481,32 @@ def fetch_build_meta(build_id: str):
     )
 
 
+def build_create_version_body(app_id: str, version_string: str):
+    """Request body for POST /appStoreVersions — a new editable version."""
+    return {
+        "data": {
+            "type": "appStoreVersions",
+            "attributes": {"platform": "IOS", "versionString": version_string},
+            "relationships": {
+                "app": {"data": {"type": "apps", "id": app_id}}
+            },
+        }
+    }
+
+
+def find_builds_for_version(app_id: str, version_string: str):
+    """Builds for one train, newest first (same filter tf_distribute uses)."""
+    return get(
+        "/builds",
+        {
+            "filter[app]": app_id,
+            "filter[preReleaseVersion.version]": version_string,
+            "sort": "-uploadedDate",
+            "limit": 10,
+        },
+    ).get("data", [])
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--app", required=True, help="app slug, e.g. my-cool-app")
@@ -489,6 +515,19 @@ def main():
         metavar="BUILD_ID",
         help="attach a build to the editable in-flight version (mutually "
              "exclusive with --field/--file/--locale/--submit-for-review)",
+    )
+    p.add_argument(
+        "--create-version",
+        metavar="X.Y.Z",
+        help="create a new editable App Store version (refuses when an "
+             "editable version already exists; mutually exclusive with the "
+             "other modes)",
+    )
+    p.add_argument(
+        "--find-build",
+        metavar="X.Y.Z",
+        help="list uploaded builds for a version train (read-only; use the "
+             "printed id with --attach-build)",
     )
     p.add_argument(
         "--submit-for-review",
@@ -524,8 +563,20 @@ def main():
     if args.append_screenshots and not args.upload_screenshots:
         p.error("--append-screenshots requires --upload-screenshots")
 
-    # Mode dispatch — attach-build, submit-for-review, screenshot upload, and metadata PATCH
-    # are mutually exclusive.
+    # Mode dispatch — attach-build, submit-for-review, screenshot upload,
+    # create-version, find-build, and metadata PATCH are mutually exclusive.
+    if args.create_version:
+        if (args.field or args.file or args.locale or args.attach_build
+                or args.submit_for_review or args.upload_screenshots or args.find_build):
+            p.error("--create-version is mutually exclusive with the other modes")
+        cmd_create_version(args)
+        return
+    if args.find_build:
+        if (args.field or args.file or args.locale or args.attach_build
+                or args.submit_for_review or args.upload_screenshots):
+            p.error("--find-build is mutually exclusive with the other modes")
+        cmd_find_build(args)
+        return
     if args.attach_build:
         if args.field or args.file or args.locale or args.submit_for_review or args.upload_screenshots:
             p.error(
@@ -552,6 +603,53 @@ def main():
     if not (args.locale and args.field and args.file):
         p.error("metadata PATCH mode requires --locale, --field, and --file")
     cmd_patch_field(args)
+
+
+def cmd_create_version(args):
+    version = args.create_version
+    if not re.fullmatch(r"\d+\.\d+(\.\d+)?", version):
+        raise SystemExit(f"Version {version!r} is not X.Y or X.Y.Z")
+    app_id, target_version, _, state, live_version = load_app_meta(args.app)
+
+    print(f"App:           {args.app}  (id {app_id})")
+    print(f"Live version:  {live_version}")
+    if state in EDITABLE_STATES:
+        raise SystemExit(
+            f"An editable version already exists: {target_version} "
+            f"(state={state}). Refusing to create another."
+        )
+
+    body = build_create_version_body(app_id, version)
+    print(f"Proposed:      new editable version {version}")
+    print("Endpoint:      POST /appStoreVersions")
+    print(f"Request body:  {body}")
+
+    if not args.apply:
+        print("\nDRY RUN — nothing sent. Re-run with --apply to create it.")
+        return
+    resp = post("/appStoreVersions", body)
+    new_id = resp.get("data", {}).get("id")
+    print(f"\nCreated version {version} (id {new_id}).")
+    print("Re-sync the mirror with fetch_metadata.py before patching metadata.")
+
+
+def cmd_find_build(args):
+    base = META / args.app
+    if not base.is_dir():
+        raise SystemExit(f"App folder not found: {base}")
+    app_id = (base / "app-id.txt").read_text().strip()
+
+    builds = find_builds_for_version(app_id, args.find_build)
+    if not builds:
+        raise SystemExit(f"No uploaded builds for train {args.find_build!r}")
+    print(f"Builds for train {args.find_build} (newest first):")
+    for b in builds:
+        a = b["attributes"]
+        print(
+            f"  {b['id']}  build#{a.get('version')}  "
+            f"state={a.get('processingState')}  "
+            f"uploaded={(a.get('uploadedDate') or '')[:10]}"
+        )
 
 
 def cmd_attach_build(args):
